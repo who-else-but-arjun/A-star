@@ -337,7 +337,7 @@ def main():
                 st.session_state.animation_path = animation_path
     
     if st.session_state.animation_path:
-        st.image(st.session_state.animation_path, use_column_width=True)
+        st.image(st.session_state.animation_path, use_container_width=True)
         
         if st.session_state.visualizer.steps:
             final_step = st.session_state.visualizer.steps[-1]
