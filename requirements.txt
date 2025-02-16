@@ -4,5 +4,4 @@ matplotlib
 numpy
 torch
 pillow
-heapq
 typing-extensions
