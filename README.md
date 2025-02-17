@@ -43,7 +43,7 @@ streamlit run a-star.py
 ```
 project/
 │
-├── a.py              # Main application file
+├── a-atar.py              # Main application file
 ├── maps/             # Directory for map files
 │   └── *.pt         # Map data files
 └── temp/            # Generated visualizations
