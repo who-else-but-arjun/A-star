@@ -25,47 +25,63 @@ class AStarVisualizer:
         self.is_playing = False
         self.speed = 1.0
         
-    def calculate_heuristic(self, positions: Dict, goal: str, scale_factor: float = 1.0) -> Dict:
+    def calculate_heuristic(self, positions: Dict, goal: str, heuristic_type: str = "euclidean", scale_factor: float = 1.0) -> Dict:
         heuristic = {}
         goal_pos = positions[goal]
+
         for node, pos in positions.items():
-            dist = np.sqrt((pos[0] - goal_pos[0])**2 + (pos[1] - goal_pos[1])**2)
+            dx = abs(pos[0] - goal_pos[0])
+            dy = abs(pos[1] - goal_pos[1])
+            dist = 0 
+            if heuristic_type == "euclidean":
+                dist = np.sqrt(dx**2 + dy**2)
+            elif heuristic_type == "manhattan":
+                dist = dx + dy
+            elif heuristic_type == "dijkstra":
+                dist = 0
+
             heuristic[node] = dist * scale_factor
+        
         return heuristic
-    
+
     def verify_heuristic_consistency(self, graph: Dict, heuristic: Dict) -> Tuple[bool, List]:
         inconsistencies = []
+        
         for node in graph:
             for neighbor, cost in graph[node].items():
                 if heuristic[node] > heuristic[neighbor] + cost:
                     inconsistencies.append({
-                        'node': node, 
+                        'node': node,
                         'neighbor': neighbor,
                         'h_node': heuristic[node],
                         'h_neighbor': heuristic[neighbor],
                         'cost': cost,
                         'difference': heuristic[node] - (heuristic[neighbor] + cost)
                     })
+        
         return len(inconsistencies) == 0, inconsistencies
 
-    def ensure_consistent_heuristic(self, graph: Dict, positions: Dict, goal: str) -> Dict:
+    def ensure_consistent_heuristic(self, graph: Dict, positions: Dict, goal: str, type: str = "manhattan") -> Dict:
         scale_factor = 1.0
         max_attempts = 10
         attempt = 1
-        
+
         while attempt <= max_attempts:
-            heuristic = self.calculate_heuristic(positions, goal, scale_factor)
+            heuristic = self.calculate_heuristic(positions, goal, type, scale_factor)
             is_consistent, _ = self.verify_heuristic_consistency(graph, heuristic)
+
             if is_consistent:
                 return heuristic
-            scale_factor *= 0.9
+            
+            scale_factor *= 0.5
             attempt += 1
-        
-        return self.calculate_heuristic(positions, goal, scale_factor)
 
-    def run_astar(self, graph: Dict, positions: Dict, start: str, goal: str) -> None:
+        print("Inconsistent heuristic")
+        return heuristic
+
+    def run_astar(self, graph: Dict, positions: Dict, start: str, goal: str, type: str) -> None:
         self.reset_simulation()
-        heuristic = self.ensure_consistent_heuristic(graph, positions, goal)
+        heuristic = self.ensure_consistent_heuristic(graph, positions, goal, type)
         
         open_set = []
         counter = 0
@@ -311,12 +327,14 @@ def main():
         map_data = torch.load(f'maps/{selected_map}.pt')
         
         nodes = sorted(map_data['graph'].keys())
+        types = ['euclidean', 'manhattan','djisktra']
         col1, col2 = st.columns(2)
         with col1:
             start_node = st.selectbox("Start", nodes, index=0)
         with col2:
             end_node = st.selectbox("Goal", nodes, index=len(nodes)-1)
         
+        type = st.selectbox("Type of Heuristic", types, index = 0)
         fps = st.slider("Speed", 1, 10, 2, 1)
         
         if st.button("Run Search"):
@@ -324,7 +342,8 @@ def main():
                 map_data['graph'],
                 map_data['positions'],
                 start_node,
-                end_node
+                end_node, 
+                type
             )
             
             with st.spinner("Generating..."):
@@ -337,7 +356,7 @@ def main():
                 st.session_state.animation_path = animation_path
     
     if st.session_state.animation_path:
-        st.image(st.session_state.animation_path, use_container_width=True)
+        st.image(st.session_state.animation_path, use_column_width=True)
         
         if st.session_state.visualizer.steps:
             final_step = st.session_state.visualizer.steps[-1]
