@@ -1,5 +1,4 @@
 import streamlit as st
-import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -9,82 +8,99 @@ import torch
 import os
 import io
 from PIL import Image
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 # ─────────────────────────────────────────────
-#  Core A* Logic
+#  Palette — clean white / warm off-white theme
 # ─────────────────────────────────────────────
+P = {
+    "bg":                  "#FAFAF8",
+    "bg2":                 "#F3F2EF",
+    "border":              "#E2E0DB",
+    "text":                "#1A1A18",
+    "subtext":             "#6B6860",
+    "edge":                "#D4D0C8",
+    "edge_weight":         "#A09C94",
+    "path_edge":           "#2563EB",
+    "node_default":        "#FFFFFF",
+    "node_default_border": "#C8C4BC",
+    "node_open":           "#F59E0B",
+    "node_open_border":    "#D97706",
+    "node_exp":            "#3B82F6",
+    "node_exp_border":     "#1D4ED8",
+    "node_path":           "#10B981",
+    "node_path_border":    "#059669",
+    "node_cur":            "#EF4444",
+    "node_cur_border":     "#B91C1C",
+}
 
+
+# ─────────────────────────────────────────────
+#  A* Core
+# ─────────────────────────────────────────────
 class AStarVisualizer:
     def __init__(self):
-        self.reset()
-
-    def reset(self):
         self.steps: List[Dict] = []
 
-    def heuristic(self, positions: Dict, goal: str, kind: str, scale: float = 1.0) -> Dict:
+    def reset(self):
+        self.steps = []
+
+    def _heuristic(self, positions, goal, kind, scale=1.0):
         gx, gy = positions[goal]
         h = {}
-        for node, (nx_, ny) in positions.items():
-            dx, dy = abs(nx_ - gx), abs(ny - gy)
+        for n, (x, y) in positions.items():
+            dx, dy = abs(x - gx), abs(y - gy)
             if kind == "euclidean":
-                h[node] = np.sqrt(dx**2 + dy**2) * scale
+                h[n] = np.sqrt(dx**2 + dy**2) * scale
             elif kind == "manhattan":
-                h[node] = (dx + dy) * scale
-            else:  # dijkstra / zero heuristic
-                h[node] = 0.0
+                h[n] = (dx + dy) * scale
+            else:
+                h[n] = 0.0
         return h
 
-    def _consistent(self, graph: Dict, h: Dict) -> bool:
+    def _consistent(self, graph, h):
         for node in graph:
             for nbr, cost in graph[node].items():
                 if h[node] > h[nbr] + cost + 1e-9:
                     return False
         return True
 
-    def admissible_heuristic(self, graph: Dict, positions: Dict, goal: str, kind: str) -> Dict:
+    def _admissible(self, graph, positions, goal, kind):
         scale = 1.0
         for _ in range(12):
-            h = self.heuristic(positions, goal, kind, scale)
+            h = self._heuristic(positions, goal, kind, scale)
             if self._consistent(graph, h):
                 return h
             scale *= 0.5
-        return h  # best effort
+        return h
 
-    def run(self, graph: Dict, positions: Dict, start: str, goal: str, kind: str):
+    def run(self, graph, positions, start, goal, kind):
         self.reset()
-        h = self.admissible_heuristic(graph, positions, goal, kind)
-
-        open_heap = []
-        counter = 0
-        heapq.heappush(open_heap, (h[start], counter, start))
+        h = self._admissible(graph, positions, goal, kind)
+        heap, ctr = [], 0
+        heapq.heappush(heap, (h[start], ctr, start))
         open_hash = {start}
-        came_from: Dict = {}
+        came_from = {}
         g = {n: float("inf") for n in graph}
         g[start] = 0
         f = {n: float("inf") for n in graph}
         f[start] = h[start]
-        explored: List[str] = []
+        explored = []
 
-        while open_heap:
-            _, _, cur = heapq.heappop(open_heap)
+        while heap:
+            _, _, cur = heapq.heappop(heap)
             open_hash.discard(cur)
             explored.append(cur)
-
             self.steps.append({
-                "current": cur,
-                "explored": explored.copy(),
-                "open_set": list(open_hash),
+                "current":   cur,
+                "explored":  explored.copy(),
+                "open_set":  list(open_hash),
                 "came_from": came_from.copy(),
-                "g": g.copy(),
-                "f": f.copy(),
-                "h": h,
+                "g": g.copy(), "f": f.copy(), "h": h,
                 "path": self._path(came_from, cur),
             })
-
             if cur == goal:
                 break
-
             for nbr, w in graph[cur].items():
                 tg = g[cur] + w
                 if tg < g[nbr]:
@@ -92,11 +108,11 @@ class AStarVisualizer:
                     g[nbr] = tg
                     f[nbr] = tg + h[nbr]
                     if nbr not in open_hash:
-                        counter += 1
-                        heapq.heappush(open_heap, (f[nbr], counter, nbr))
+                        ctr += 1
+                        heapq.heappush(heap, (f[nbr], ctr, nbr))
                         open_hash.add(nbr)
 
-    def _path(self, came_from: Dict, cur: str) -> List[str]:
+    def _path(self, came_from, cur):
         path = [cur]
         while cur in came_from:
             cur = came_from[cur]
@@ -106,172 +122,178 @@ class AStarVisualizer:
 
 
 # ─────────────────────────────────────────────
-#  Rendering
+#  Graph Rendering
 # ─────────────────────────────────────────────
-
-PALETTE = {
-    "bg":        "#0D1117",
-    "bg2":       "#161B22",
-    "border":    "#30363D",
-    "text":      "#E6EDF3",
-    "subtext":   "#8B949E",
-    "edge":      "#30363D",
-    "path_edge": "#58A6FF",
-    "node_def":  "#21262D",
-    "node_open": "#D29922",
-    "node_exp":  "#388BFD",
-    "node_path": "#3FB950",
-    "node_cur":  "#F85149",
-    "node_bdr":  "#484F58",
-}
-
-def render_frame(graph: Dict, positions: Dict, step: Dict, title: str, step_num: int, total: int) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(13, 8))
-    fig.patch.set_facecolor(PALETTE["bg"])
-    ax.set_facecolor(PALETTE["bg"])
+def render_frame(graph, positions, step, title, step_num, total):
+    fig, ax = plt.subplots(figsize=(14, 9))
+    fig.patch.set_facecolor(P["bg"])
+    ax.set_facecolor(P["bg"])
 
     xs = [p[0] for p in positions.values()]
     ys = [p[1] for p in positions.values()]
-    pad = 1.0
-    ax.set_xlim(min(xs) - pad, max(xs) + pad)
-    ax.set_ylim(min(ys) - pad, max(ys) + pad)
+    spread_x = max(xs) - min(xs) + 1e-6
+    spread_y = max(ys) - min(ys) + 1e-6
+    pad_x = spread_x * 0.20 + 0.9
+    pad_y = spread_y * 0.24 + 0.9
+    ax.set_xlim(min(xs) - pad_x, max(xs) + pad_x)
+    ax.set_ylim(min(ys) - pad_y, max(ys) + pad_y)
 
     path = step["path"]
-    path_edges = set()
-    if path:
+    path_edge_set = set()
+    if len(path) > 1:
         for i in range(len(path) - 1):
-            path_edges.add((path[i], path[i+1]))
-            path_edges.add((path[i+1], path[i]))
+            path_edge_set.add((path[i], path[i + 1]))
+            path_edge_set.add((path[i + 1], path[i]))
 
-    seen_edges = set()
-    normal_segs, path_segs = [], []
-    for node in graph:
-        for nbr in graph[node]:
-            key = tuple(sorted([node, nbr]))
-            if key in seen_edges:
-                continue
-            seen_edges.add(key)
-            x1, y1 = positions[node]
-            x2, y2 = positions[nbr]
-            seg = ((x1, y1), (x2, y2))
-            if (node, nbr) in path_edges:
-                path_segs.append(seg)
-            else:
-                normal_segs.append(seg)
-
-    ax.add_collection(LineCollection(normal_segs, colors=PALETTE["edge"], linewidths=1.5, alpha=0.5, zorder=1))
-    if path_segs:
-        ax.add_collection(LineCollection(path_segs, colors=PALETTE["path_edge"], linewidths=3.0, alpha=0.9, zorder=2))
-
-    # Edge weight labels
+    # ── Edges ────────────────────────────────────
+    seen = set()
     for node in graph:
         for nbr, w in graph[node].items():
-            if node < nbr:
-                mx = (positions[node][0] + positions[nbr][0]) / 2
-                my = (positions[node][1] + positions[nbr][1]) / 2
-                ax.text(mx, my, f"{w:.0f}", ha="center", va="center",
-                        fontsize=7, color=PALETTE["subtext"], zorder=3,
-                        bbox=dict(boxstyle="round,pad=0.15", fc=PALETTE["bg"], ec="none", alpha=0.8))
+            key = tuple(sorted([node, nbr]))
+            if key in seen:
+                continue
+            seen.add(key)
+            x1, y1 = positions[node]
+            x2, y2 = positions[nbr]
+            is_path_edge = (node, nbr) in path_edge_set
 
-    # Draw nodes
+            if is_path_edge:
+                # soft glow halo
+                ax.plot([x1, x2], [y1, y2],
+                        color=P["path_edge"], linewidth=10,
+                        alpha=0.10, solid_capstyle="round", zorder=2)
+                # main line
+                ax.plot([x1, x2], [y1, y2],
+                        color=P["path_edge"], linewidth=3.2,
+                        alpha=0.95, solid_capstyle="round", zorder=3)
+            else:
+                ax.plot([x1, x2], [y1, y2],
+                        color=P["edge"], linewidth=1.6,
+                        alpha=0.9, solid_capstyle="round", zorder=1)
+
+            # weight label — offset perpendicular to edge
+            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx**2 + dy**2) + 1e-9
+            ox, oy = -dy / length * 0.20, dx / length * 0.20
+            ax.text(mx + ox, my + oy, f"{w:.0f}",
+                    ha="center", va="center", fontsize=7.5,
+                    color=P["path_edge"] if is_path_edge else P["edge_weight"],
+                    fontfamily="monospace",
+                    fontweight="bold" if is_path_edge else "normal",
+                    zorder=4,
+                    bbox=dict(boxstyle="round,pad=0.18",
+                              fc=P["bg"], ec="none", alpha=0.88))
+
+    # ── Nodes ────────────────────────────────────
     explored_set = set(step["explored"])
-    open_set = set(step["open_set"])
-    path_set = set(path)
+    open_set     = set(step["open_set"])
+    path_set     = set(path)
+    cur          = step["current"]
+    node_r       = min(spread_x, spread_y) * 0.06 + 0.18   # adaptive radius
 
     for node, (nx_, ny) in positions.items():
-        if node == step["current"]:
-            color = PALETTE["node_cur"]
-            size = 420
-            border = "#FFFFFF"
-            bw = 2.5
+        if node == cur:
+            fc, ec, r, lw = P["node_cur"],     P["node_cur_border"],     node_r * 1.18, 2.8
         elif node in path_set:
-            color = PALETTE["node_path"]
-            size = 380
-            border = "#FFFFFF"
-            bw = 2
+            fc, ec, r, lw = P["node_path"],    P["node_path_border"],    node_r * 1.10, 2.2
         elif node in explored_set:
-            color = PALETTE["node_exp"]
-            size = 340
-            border = PALETTE["node_bdr"]
-            bw = 1.5
+            fc, ec, r, lw = P["node_exp"],     P["node_exp_border"],     node_r,        2.0
         elif node in open_set:
-            color = PALETTE["node_open"]
-            size = 340
-            border = PALETTE["node_bdr"]
-            bw = 1.5
+            fc, ec, r, lw = P["node_open"],    P["node_open_border"],    node_r,        2.0
         else:
-            color = PALETTE["node_def"]
-            size = 300
-            border = PALETTE["node_bdr"]
-            bw = 1.5
+            fc, ec, r, lw = P["node_default"], P["node_default_border"], node_r,        1.6
 
-        circle = plt.Circle((nx_, ny), 0.22, color=color, zorder=4, linewidth=bw,
-                             linestyle="-", fill=True, ec=border)
+        # subtle drop shadow
+        shadow = plt.Circle((nx_ + 0.04, ny - 0.04), r,
+                             facecolor=(0, 0, 0, 0.07), edgecolor="none", zorder=4)
+        ax.add_patch(shadow)
+
+        # node disc
+        circle = plt.Circle((nx_, ny), r,
+                             facecolor=fc, edgecolor=ec,
+                             linewidth=lw, zorder=5)
         ax.add_patch(circle)
-        ax.text(nx_, ny, node, ha="center", va="center",
-                fontsize=8, fontweight="bold", color="#FFFFFF", zorder=5)
 
-        # Score label
-        g_val = step["g"][node]
-        h_val = step["h"][node]
-        f_val = step["f"][node]
-        g_str = f"{g_val:.1f}" if g_val != float("inf") else "∞"
-        f_str = f"{f_val:.1f}" if f_val != float("inf") else "∞"
-        score_txt = f"g={g_str}  h={h_val:.1f}\nf={f_str}"
-        ax.text(nx_, ny - 0.42, score_txt, ha="center", va="top",
-                fontsize=6.5, color=PALETTE["subtext"], zorder=5,
-                fontfamily="monospace")
+        # node letter
+        txt_color = "#FFFFFF" if fc != P["node_default"] else P["text"]
+        ax.text(nx_, ny, node,
+                ha="center", va="center",
+                fontsize=max(8, int(node_r * 32)),
+                fontweight="bold", color=txt_color,
+                fontfamily="monospace", zorder=6)
 
-    # Title
-    ax.set_title(
-        f"{title}  ·  Step {step_num} / {total}",
-        color=PALETTE["text"], fontsize=14, fontweight="bold", pad=14,
-        fontfamily="monospace", loc="left"
-    )
+        # score pill below the node
+        g_v = step["g"][node]
+        f_v = step["f"][node]
+        h_v = step["h"][node]
+        g_s = f"{g_v:.1f}" if g_v != float("inf") else "∞"
+        f_s = f"{f_v:.1f}" if f_v != float("inf") else "∞"
+        score = f"g={g_s}  h={h_v:.1f}  f={f_s}"
+        ax.text(nx_, ny - r - 0.14, score,
+                ha="center", va="top", fontsize=6.5,
+                color=P["path_edge"] if node in path_set else P["subtext"],
+                fontfamily="monospace", zorder=6,
+                bbox=dict(boxstyle="round,pad=0.22",
+                          fc=P["bg2"], ec=P["border"],
+                          linewidth=0.7, alpha=0.92))
 
-    # Path info footer
-    if path:
-        cost = sum(graph[path[i]][path[i+1]] for i in range(len(path)-1))
-        footer = f"Path: {' → '.join(path)}   |   Cost: {cost:.1f}"
+    # ── Title & step badge ────────────────────────
+    ax.text(0.013, 0.982, title,
+            transform=ax.transAxes, ha="left", va="top",
+            fontsize=14, fontweight="bold",
+            color=P["text"], fontfamily="monospace")
+    ax.text(0.013, 0.944, f"step {step_num} / {total}",
+            transform=ax.transAxes, ha="left", va="top",
+            fontsize=9, color=P["subtext"], fontfamily="monospace")
+
+    # ── Footer path ───────────────────────────────
+    if len(path) > 1:
+        cost    = sum(graph[path[i]][path[i + 1]] for i in range(len(path) - 1))
+        footer  = f"{' → '.join(path)}   ·   cost = {cost:.1f}"
+        fc_text = P["path_edge"]
     else:
-        footer = "Searching…"
-    ax.text(0.5, -0.03, footer, transform=ax.transAxes,
-            ha="center", va="top", fontsize=9, color=PALETTE["subtext"], fontfamily="monospace")
+        footer  = "searching…"
+        fc_text = P["subtext"]
+    ax.text(0.5, 0.013, footer,
+            transform=ax.transAxes, ha="center", va="bottom",
+            fontsize=8.5, color=fc_text, fontfamily="monospace")
 
-    # Legend
+    # ── Legend ────────────────────────────────────
     legend_items = [
-        mpatches.Patch(color=PALETTE["node_cur"],  label="Current"),
-        mpatches.Patch(color=PALETTE["node_path"], label="Path"),
-        mpatches.Patch(color=PALETTE["node_exp"],  label="Explored"),
-        mpatches.Patch(color=PALETTE["node_open"], label="Open"),
-        mpatches.Patch(color=PALETTE["node_def"],  label="Unvisited"),
+        mpatches.Patch(facecolor=P["node_cur"],     edgecolor=P["node_cur_border"],     linewidth=1.2, label="Expanding"),
+        mpatches.Patch(facecolor=P["node_path"],    edgecolor=P["node_path_border"],    linewidth=1.2, label="On path"),
+        mpatches.Patch(facecolor=P["node_exp"],     edgecolor=P["node_exp_border"],     linewidth=1.2, label="Explored"),
+        mpatches.Patch(facecolor=P["node_open"],    edgecolor=P["node_open_border"],    linewidth=1.2, label="Frontier"),
+        mpatches.Patch(facecolor=P["node_default"], edgecolor=P["node_default_border"], linewidth=1.2, label="Unvisited"),
     ]
-    legend = ax.legend(handles=legend_items, loc="upper right",
-                       framealpha=0.15, labelcolor=PALETTE["text"],
-                       fontsize=8, facecolor=PALETTE["bg2"],
-                       edgecolor=PALETTE["border"])
-    for text in legend.get_texts():
-        text.set_color(PALETTE["text"])
+    leg = ax.legend(handles=legend_items, loc="upper right",
+                    framealpha=0.95, fontsize=8,
+                    facecolor=P["bg2"], edgecolor=P["border"],
+                    labelcolor=P["text"], handlelength=1.5,
+                    borderpad=0.8, labelspacing=0.5)
+    leg.get_frame().set_linewidth(0.8)
 
+    ax.set_aspect("equal")
     ax.set_axis_off()
-    plt.tight_layout(pad=1.2)
+    plt.tight_layout(pad=0.9)
     return fig
 
 
-def build_gif(graph, positions, steps, city_name, fps) -> str:
+def build_gif(graph, positions, steps, name, fps):
     os.makedirs("temp", exist_ok=True)
-    frames = []
-    total = len(steps)
+    frames, total = [], len(steps)
     for i, step in enumerate(steps):
-        fig = render_frame(graph, positions, step, city_name, i + 1, total)
+        fig = render_frame(graph, positions, step, name, i + 1, total)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=110, facecolor=PALETTE["bg"])
+        fig.savefig(buf, format="png", dpi=120,
+                    facecolor=P["bg"], bbox_inches="tight")
         buf.seek(0)
         frames.append(Image.open(buf).copy())
         plt.close(fig)
 
-    out = f"temp/{city_name}_astar.gif"
-    duration = max(100, int(1000 / fps))
+    out      = f"temp/{name}_astar.gif"
+    duration = max(120, int(1000 / fps))
     frames[0].save(out, save_all=True, append_images=frames[1:],
                    optimize=True, duration=duration, loop=0)
     return out
@@ -280,266 +302,302 @@ def build_gif(graph, positions, steps, city_name, fps) -> str:
 # ─────────────────────────────────────────────
 #  Streamlit UI
 # ─────────────────────────────────────────────
-
 def main():
     st.set_page_config(page_title="A* Pathfinder", layout="wide", page_icon="🔍")
 
     st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Sora:wght@400;600;700&display=swap');
 
     html, body, [class*="css"] {{
-        background-color: {PALETTE["bg"]} !important;
-        color: {PALETTE["text"]} !important;
-        font-family: 'Space Grotesk', sans-serif;
+        background-color: {P["bg"]} !important;
+        color: {P["text"]} !important;
+        font-family: 'Sora', sans-serif;
     }}
-    .stApp {{ background-color: {PALETTE["bg"]}; }}
+    .stApp {{ background-color: {P["bg"]}; }}
 
-    /* Sidebar */
     [data-testid="stSidebar"] {{
-        background-color: {PALETTE["bg2"]} !important;
-        border-right: 1px solid {PALETTE["border"]};
+        background-color: {P["bg2"]} !important;
+        border-right: 1px solid {P["border"]} !important;
     }}
-    [data-testid="stSidebar"] * {{ color: {PALETTE["text"]} !important; }}
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span {{ color: {P["text"]} !important; }}
 
-    /* Selectbox / inputs */
-    [data-testid="stSelectbox"] > div > div,
-    [data-testid="stNumberInput"] > div > div {{
-        background-color: {PALETTE["bg"]} !important;
-        border: 1px solid {PALETTE["border"]} !important;
-        border-radius: 6px;
-        color: {PALETTE["text"]} !important;
-        font-family: 'JetBrains Mono', monospace;
+    [data-testid="stSelectbox"] > div > div {{
+        background-color: {P["bg"]} !important;
+        border: 1px solid {P["border"]} !important;
+        border-radius: 8px;
+        color: {P["text"]} !important;
+        font-family: 'DM Mono', monospace;
+        font-size: 13px;
     }}
 
-    /* Buttons */
     .stButton > button {{
-        background: {PALETTE["node_path"]} !important;
-        color: {PALETTE["bg"]} !important;
-        border: none;
-        border-radius: 6px;
-        font-family: 'JetBrains Mono', monospace;
-        font-weight: 700;
-        font-size: 14px;
-        padding: 0.5rem 1.5rem;
-        width: 100%;
-        transition: opacity 0.2s;
+        background: {P["path_edge"]} !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-family: 'DM Mono', monospace !important;
+        font-weight: 500 !important;
+        font-size: 13px !important;
+        padding: 0.55rem 1.4rem !important;
+        width: 100% !important;
+        letter-spacing: 0.02em;
+        box-shadow: 0 2px 8px #2563EB28;
+        transition: opacity 0.15s ease;
     }}
-    .stButton > button:hover {{ opacity: 0.85; }}
+    .stButton > button:hover {{ opacity: 0.86 !important; }}
 
-    /* Metric cards */
     [data-testid="stMetric"] {{
-        background-color: {PALETTE["bg2"]};
-        border: 1px solid {PALETTE["border"]};
-        border-radius: 8px;
-        padding: 0.8rem 1.2rem;
+        background-color: {P["bg2"]};
+        border: 1px solid {P["border"]};
+        border-radius: 10px;
+        padding: 0.9rem 1.1rem;
     }}
-    [data-testid="stMetricLabel"] {{ color: {PALETTE["subtext"]} !important; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }}
-    [data-testid="stMetricValue"] {{ color: {PALETTE["text"]} !important; font-family: 'JetBrains Mono', monospace; font-size: 22px; }}
+    [data-testid="stMetricLabel"] {{
+        color: {P["subtext"]} !important;
+        font-size: 10px !important;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        font-family: 'DM Mono', monospace;
+    }}
+    [data-testid="stMetricValue"] {{
+        color: {P["text"]} !important;
+        font-family: 'DM Mono', monospace !important;
+        font-size: 24px !important;
+        font-weight: 500;
+    }}
 
-    /* Table */
     [data-testid="stTable"] table {{
-        background-color: {PALETTE["bg2"]};
-        border: 1px solid {PALETTE["border"]};
-        border-radius: 8px;
-        font-family: 'JetBrains Mono', monospace;
+        background-color: {P["bg2"]};
+        border: 1px solid {P["border"]};
+        border-radius: 10px;
+        font-family: 'DM Mono', monospace;
         font-size: 12px;
+        overflow: hidden;
     }}
     [data-testid="stTable"] th {{
-        background-color: {PALETTE["bg"]} !important;
-        color: {PALETTE["subtext"]} !important;
+        background-color: {P["bg"]} !important;
+        color: {P["subtext"]} !important;
         text-transform: uppercase;
         font-size: 10px;
-        letter-spacing: 0.06em;
-        border-bottom: 1px solid {PALETTE["border"]};
+        letter-spacing: 0.07em;
+        border-bottom: 1px solid {P["border"]} !important;
+        padding: 8px 12px !important;
     }}
-    [data-testid="stTable"] td {{ color: {PALETTE["text"]} !important; border-bottom: 1px solid {PALETTE["border"]}; }}
-
-    /* Slider */
-    [data-testid="stSlider"] * {{ color: {PALETTE["text"]} !important; }}
-
-    /* Info box */
-    .stAlert {{ background-color: {PALETTE["bg2"]} !important; border: 1px solid {PALETTE["border"]} !important; color: {PALETTE["subtext"]} !important; }}
-
-    /* Divider */
-    hr {{ border-color: {PALETTE["border"]} !important; }}
-
-    /* Remove default top padding */
-    .block-container {{ padding-top: 2rem; }}
-
-    /* Page title */
-    .page-title {{
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 26px;
-        font-weight: 700;
-        color: {PALETTE["text"]};
-        letter-spacing: -0.02em;
+    [data-testid="stTable"] td {{
+        color: {P["text"]} !important;
+        border-bottom: 1px solid {P["border"]} !important;
+        padding: 7px 12px !important;
     }}
-    .page-subtitle {{
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-        color: {PALETTE["subtext"]};
-        letter-spacing: 0.05em;
+    [data-testid="stTable"] tr:last-child td {{ border-bottom: none !important; }}
+
+    [data-testid="stSlider"] * {{ color: {P["text"]} !important; }}
+
+    .section-label {{
+        font-family: 'DM Mono', monospace;
+        font-size: 10px;
+        color: {P["subtext"]};
         text-transform: uppercase;
-        margin-bottom: 1.5rem;
+        letter-spacing: 0.1em;
+        margin-bottom: 4px;
     }}
-    .badge {{
-        display: inline-block;
-        background: {PALETTE["node_path"]}22;
-        color: {PALETTE["node_path"]};
-        border: 1px solid {PALETTE["node_path"]}55;
-        border-radius: 4px;
-        padding: 2px 8px;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 11px;
-        margin-right: 6px;
+
+    .path-strip {{
+        display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 16px;
+    }}
+    .path-node {{
+        background: #EFF6FF; color: {P["path_edge"]};
+        border: 1px solid #BFDBFE; border-radius: 6px;
+        padding: 3px 10px;
+        font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 500;
+    }}
+    .path-arrow {{ color: {P["subtext"]}; font-size: 12px; line-height: 26px; }}
+
+    hr {{ border: none; border-top: 1px solid {P["border"]} !important; margin: 1.1rem 0; }}
+    .stAlert {{
+        background-color: {P["bg2"]} !important;
+        border: 1px solid {P["border"]} !important;
+        border-radius: 8px !important;
+    }}
+    .block-container {{ padding-top: 2rem; max-width: 1200px; }}
+    [data-testid="stImage"] img {{
+        border-radius: 12px;
+        border: 1px solid {P["border"]};
+        box-shadow: 0 4px 20px #00000010;
     }}
     </style>
     """, unsafe_allow_html=True)
 
-    # ── Header ──────────────────────────────
-    st.markdown('<p class="page-title">A* Pathfinding Visualiser</p>', unsafe_allow_html=True)
-    st.markdown('<p class="page-subtitle">Interactive step-by-step graph search</p>', unsafe_allow_html=True)
+    # ── Header ───────────────────────────────────
+    st.markdown(f"""
+    <div style="margin-bottom:1.6rem;">
+        <div style="font-family:'DM Mono',monospace; font-size:11px;
+                    color:{P['subtext']}; letter-spacing:0.12em;
+                    text-transform:uppercase; margin-bottom:4px;">
+            Graph Search Visualiser
+        </div>
+        <div style="font-family:'Sora',sans-serif; font-size:28px;
+                    font-weight:700; color:{P['text']}; letter-spacing:-0.02em;">
+            A* Pathfinding
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ── Session state ────────────────────────
-    for key, default in [("viz", None), ("current_step", 0),
-                         ("last_map", None), ("gif_path", None)]:
-        if key not in st.session_state:
-            st.session_state[key] = default
+    # ── Session state ─────────────────────────────
+    for k, v in [("viz", None), ("last_map", None), ("gif_path", None)]:
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    # ── Sidebar ──────────────────────────────
+    # ── Sidebar ───────────────────────────────────
     with st.sidebar:
-        st.markdown("### ⚙️ Configuration")
-        st.markdown("---")
-
+        st.markdown('<div class="section-label">Map</div>', unsafe_allow_html=True)
         maps_dir = "maps"
         if not os.path.exists(maps_dir):
-            st.error("No `maps/` directory found.")
+            st.error("`maps/` directory not found.")
             return
         available = sorted([f[:-3] for f in os.listdir(maps_dir) if f.endswith(".pt")])
         if not available:
-            st.warning("No `.pt` map files found in `maps/`.")
+            st.warning("No `.pt` map files found.")
             return
 
-        selected_map = st.selectbox("🗺️  Map", available)
-
+        selected_map = st.selectbox("", available, label_visibility="collapsed")
         if selected_map != st.session_state.last_map:
-            st.session_state.viz = AStarVisualizer()
+            st.session_state.viz      = AStarVisualizer()
             st.session_state.last_map = selected_map
             st.session_state.gif_path = None
 
         map_data = torch.load(f"{maps_dir}/{selected_map}.pt", weights_only=False)
-        nodes = sorted(map_data["graph"].keys())
+        nodes    = sorted(map_data["graph"].keys())
 
-        st.markdown("#### Nodes")
-        col1, col2 = st.columns(2)
-        with col1:
-            start_node = st.selectbox("Start", nodes, index=0)
-        with col2:
-            end_node = st.selectbox("Goal", nodes, index=len(nodes) - 1)
+        st.markdown("---")
+        st.markdown('<div class="section-label">Nodes</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'<div style="font-size:11px;color:{P["subtext"]};margin-bottom:2px;">Start</div>', unsafe_allow_html=True)
+            start_node = st.selectbox("", nodes, index=0, key="start", label_visibility="collapsed")
+        with c2:
+            st.markdown(f'<div style="font-size:11px;color:{P["subtext"]};margin-bottom:2px;">Goal</div>', unsafe_allow_html=True)
+            end_node = st.selectbox("", nodes, index=len(nodes) - 1, key="goal", label_visibility="collapsed")
 
-        st.markdown("#### Heuristic")
-        heuristic_type = st.selectbox(
-            "Function",
-            ["euclidean", "manhattan", "dijkstra"],
-            format_func=lambda x: {"euclidean": "Euclidean (L2)", "manhattan": "Manhattan (L1)", "dijkstra": "Dijkstra (h=0)"}[x]
-        )
+        st.markdown("---")
+        st.markdown('<div class="section-label">Heuristic</div>', unsafe_allow_html=True)
+        heuristic_type = st.selectbox("", ["euclidean", "manhattan", "dijkstra"],
+            format_func=lambda x: {
+                "euclidean": "Euclidean  (L2)",
+                "manhattan": "Manhattan  (L1)",
+                "dijkstra":  "Dijkstra   (h = 0)",
+            }[x], label_visibility="collapsed")
 
-        st.markdown("#### Playback")
-        fps = st.slider("Frames per second", 1, 10, 2)
+        st.markdown("---")
+        st.markdown('<div class="section-label">Playback speed (fps)</div>', unsafe_allow_html=True)
+        fps = st.slider("", 1, 10, 2, label_visibility="collapsed")
 
         st.markdown("---")
         run_btn = st.button("▶  Run A* Search")
 
         if run_btn:
             if start_node == end_node:
-                st.error("Start and goal must differ.")
+                st.error("Start and goal must be different nodes.")
             else:
                 viz = AStarVisualizer()
-                viz.run(map_data["graph"], map_data["positions"], start_node, end_node, heuristic_type)
+                viz.run(map_data["graph"], map_data["positions"],
+                        start_node, end_node, heuristic_type)
                 st.session_state.viz = viz
-
-                with st.spinner("Rendering animation…"):
+                with st.spinner("Rendering frames…"):
                     gif = build_gif(map_data["graph"], map_data["positions"],
                                     viz.steps, selected_map, fps)
                 st.session_state.gif_path = gif
 
-    # ── Main content ─────────────────────────
+    # ── Main panel ────────────────────────────────
     viz: AStarVisualizer = st.session_state.viz
 
     if st.session_state.gif_path and viz and viz.steps:
         st.image(st.session_state.gif_path, use_container_width=True)
-
         st.markdown("---")
         final = viz.steps[-1]
-        found = final["path"] and final["path"][-1] == final["path"][-1]
 
-        # Metrics row
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Nodes Explored", len(final["explored"]))
-        with col2:
-            st.metric("Search Steps", len(viz.steps))
-        with col3:
-            if final["path"]:
-                cost = sum(map_data["graph"][final["path"][i]][final["path"][i+1]]
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.metric("Nodes Explored", len(final["explored"]))
+        with c2: st.metric("Search Steps",   len(viz.steps))
+        with c3:
+            if final["path"] and len(final["path"]) > 1:
+                cost = sum(map_data["graph"][final["path"][i]][final["path"][i + 1]]
                            for i in range(len(final["path"]) - 1))
                 st.metric("Path Cost", f"{cost:.1f}")
             else:
-                st.metric("Path Cost", "N/A")
-        with col4:
+                st.metric("Path Cost", "—")
+        with c4:
             st.metric("Path Length", len(final["path"]) if final["path"] else 0)
 
-        # Path display
-        if final["path"]:
-            st.markdown("**Optimal path found:**")
-            badges = "".join(f'<span class="badge">{n}</span>' for n in final["path"])
-            st.markdown(badges, unsafe_allow_html=True)
+        if final["path"] and len(final["path"]) > 1:
+            st.markdown('<div class="section-label" style="margin-top:1rem;">Optimal Path</div>', unsafe_allow_html=True)
+            badges = "".join(
+                f'<span class="path-node">{n}</span>'
+                + (f'<span class="path-arrow"> › </span>' if i < len(final["path"]) - 1 else "")
+                for i, n in enumerate(final["path"])
+            )
+            st.markdown(f'<div class="path-strip">{badges}</div>', unsafe_allow_html=True)
 
-        # Node scores table
-        st.markdown("#### Node Score Summary")
+        st.markdown('<div class="section-label">Node Scores</div>', unsafe_allow_html=True)
         rows = []
         for node in sorted(map_data["graph"].keys()):
             g_v = final["g"][node]
             f_v = final["f"][node]
-            status = (
-                "🟢 Path" if node in final["path"] else
-                "🔵 Explored" if node in final["explored"] else
-                "🟡 Open" if node in final["open_set"] else
-                "⚪ Unvisited"
-            )
             rows.append({
-                "Node": node,
-                "g  (cost from start)": f"{g_v:.2f}" if g_v != float("inf") else "∞",
-                "h  (heuristic)": f"{final['h'][node]:.2f}",
-                "f  (total)": f"{f_v:.2f}" if f_v != float("inf") else "∞",
-                "Status": status,
+                "Node":            node,
+                "g (from start)":  f"{g_v:.2f}" if g_v != float("inf") else "∞",
+                "h (to goal)":     f"{final['h'][node]:.2f}",
+                "f = g + h":       f"{f_v:.2f}" if f_v != float("inf") else "∞",
+                "Status": (
+                    "● Path"     if node in final["path"]     else
+                    "● Explored" if node in final["explored"] else
+                    "● Frontier" if node in final["open_set"] else
+                    "○ Unvisited"
+                ),
             })
         st.table(rows)
 
     else:
-        # Empty state
         st.markdown(f"""
-        <div style="text-align:center; padding: 4rem 2rem; color: {PALETTE['subtext']};">
-            <div style="font-size:48px; margin-bottom:1rem;">🔍</div>
-            <p style="font-family:'JetBrains Mono',monospace; font-size:14px;">
-                Select a map, choose start & goal nodes, then click <strong style="color:{PALETTE['node_path']}">Run A* Search</strong>.
-            </p>
+        <div style="margin-top:3.5rem; text-align:center; padding:3rem 2rem;
+                    background:{P['bg2']}; border:1px solid {P['border']};
+                    border-radius:14px;">
+            <div style="font-size:38px; margin-bottom:0.8rem;">🔍</div>
+            <div style="font-family:'Sora',sans-serif; font-size:16px;
+                        font-weight:600; color:{P['text']}; margin-bottom:6px;">
+                Ready to search
+            </div>
+            <div style="font-family:'DM Mono',monospace; font-size:12px;
+                        color:{P['subtext']}; max-width:340px; margin:0 auto; line-height:1.7;">
+                Select a map and nodes in the sidebar,<br>
+                then click <strong>Run A* Search</strong>.
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
-        with st.expander("📖 How to read the visualisation"):
-            st.markdown(f"""
-| Symbol | Meaning |
-|--------|---------|
-| 🔴 Red node | Node currently being expanded |
-| 🟢 Green node | Node on the optimal path |
-| 🔵 Blue node | Already explored |
-| 🟡 Yellow node | In the open (frontier) set |
-| ⚪ Grey node | Not yet visited |
-| **g** | Exact cost from start to this node |
-| **h** | Heuristic estimate to goal |
-| **f = g + h** | Total estimated cost |
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📖 How to read the graph"):
+            st.markdown("""
+| Node colour | Meaning |
+|-------------|---------|
+| 🔴 Red | Currently expanding |
+| 🟢 Green | On the optimal path |
+| 🔵 Blue | Already explored |
+| 🟡 Amber | In the open frontier |
+| ⚪ White | Not yet visited |
+
+**Score labels** shown beneath each node:
+
+| Label | Meaning |
+|-------|---------|
+| `g` | Exact cost from start to this node |
+| `h` | Heuristic estimate to goal |
+| `f = g + h` | Total estimated path cost |
+
+Edge numbers show the travel cost between adjacent nodes.  
+Blue edges highlight the current best path.
             """)
 
 
