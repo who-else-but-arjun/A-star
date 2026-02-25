@@ -1,407 +1,547 @@
 import streamlit as st
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
-import time
 import heapq
 from matplotlib.collections import LineCollection
-import matplotlib.patches as patches
 import torch
 import os
-import random
-from typing import Dict, List, Tuple, Set
-import matplotlib.animation as animation
 import io
-import base64
 from PIL import Image
+from typing import Dict, List, Tuple
+
+# ─────────────────────────────────────────────
+#  Core A* Logic
+# ─────────────────────────────────────────────
 
 class AStarVisualizer:
     def __init__(self):
-        self.reset_simulation()
-        
-    def reset_simulation(self):
-        self.steps = []
-        self.current_step = 0
-        self.is_playing = False
-        self.speed = 1.0
-        
-    def calculate_heuristic(self, positions: Dict, goal: str, heuristic_type: str = "euclidean", scale_factor: float = 1.0) -> Dict:
-        heuristic = {}
-        goal_pos = positions[goal]
+        self.reset()
 
-        for node, pos in positions.items():
-            dx = abs(pos[0] - goal_pos[0])
-            dy = abs(pos[1] - goal_pos[1])
-            dist = 0 
-            if heuristic_type == "euclidean":
-                dist = np.sqrt(dx**2 + dy**2)
-            elif heuristic_type == "manhattan":
-                dist = dx + dy
-            elif heuristic_type == "dijkstra":
-                dist = 0
+    def reset(self):
+        self.steps: List[Dict] = []
 
-            heuristic[node] = dist * scale_factor
-        
-        return heuristic
+    def heuristic(self, positions: Dict, goal: str, kind: str, scale: float = 1.0) -> Dict:
+        gx, gy = positions[goal]
+        h = {}
+        for node, (nx_, ny) in positions.items():
+            dx, dy = abs(nx_ - gx), abs(ny - gy)
+            if kind == "euclidean":
+                h[node] = np.sqrt(dx**2 + dy**2) * scale
+            elif kind == "manhattan":
+                h[node] = (dx + dy) * scale
+            else:  # dijkstra / zero heuristic
+                h[node] = 0.0
+        return h
 
-    def verify_heuristic_consistency(self, graph: Dict, heuristic: Dict) -> Tuple[bool, List]:
-        inconsistencies = []
-        
+    def _consistent(self, graph: Dict, h: Dict) -> bool:
         for node in graph:
-            for neighbor, cost in graph[node].items():
-                if heuristic[node] > heuristic[neighbor] + cost:
-                    inconsistencies.append({
-                        'node': node,
-                        'neighbor': neighbor,
-                        'h_node': heuristic[node],
-                        'h_neighbor': heuristic[neighbor],
-                        'cost': cost,
-                        'difference': heuristic[node] - (heuristic[neighbor] + cost)
-                    })
-        
-        return len(inconsistencies) == 0, inconsistencies
+            for nbr, cost in graph[node].items():
+                if h[node] > h[nbr] + cost + 1e-9:
+                    return False
+        return True
 
-    def ensure_consistent_heuristic(self, graph: Dict, positions: Dict, goal: str, type: str = "manhattan") -> Dict:
-        scale_factor = 1.0
-        max_attempts = 10
-        attempt = 1
+    def admissible_heuristic(self, graph: Dict, positions: Dict, goal: str, kind: str) -> Dict:
+        scale = 1.0
+        for _ in range(12):
+            h = self.heuristic(positions, goal, kind, scale)
+            if self._consistent(graph, h):
+                return h
+            scale *= 0.5
+        return h  # best effort
 
-        while attempt <= max_attempts:
-            heuristic = self.calculate_heuristic(positions, goal, type, scale_factor)
-            is_consistent, _ = self.verify_heuristic_consistency(graph, heuristic)
+    def run(self, graph: Dict, positions: Dict, start: str, goal: str, kind: str):
+        self.reset()
+        h = self.admissible_heuristic(graph, positions, goal, kind)
 
-            if is_consistent:
-                return heuristic
-            
-            scale_factor *= 0.5
-            attempt += 1
-
-        print("Inconsistent heuristic")
-        return heuristic
-
-    def run_astar(self, graph: Dict, positions: Dict, start: str, goal: str, type: str) -> None:
-        self.reset_simulation()
-        heuristic = self.ensure_consistent_heuristic(graph, positions, goal, type)
-        
-        open_set = []
+        open_heap = []
         counter = 0
-        heapq.heappush(open_set, (heuristic[start], counter, start))
-        came_from = {}
-        g_score = {node: float('inf') for node in graph}
-        g_score[start] = 0
-        f_score = {node: float('inf') for node in graph}
-        f_score[start] = heuristic[start]
-        open_set_hash = {start}
-        explored = []
-        
-        while open_set:
-            current_f, _, current = heapq.heappop(open_set)
-            open_set_hash.remove(current)
-            explored.append(current)
-            
-            self.steps.append({
-                'current': current,
-                'explored': explored.copy(),
-                'open_set': list(open_set_hash),
-                'came_from': came_from.copy(),
-                'g_score': g_score.copy(),
-                'f_score': f_score.copy(),
-                'path': self.reconstruct_path(came_from, current),
-                'heuristic': heuristic
-            })
-            
-            if current == goal:
-                break
-                
-            for neighbor, weight in graph[current].items():
-                tentative_g_score = g_score[current] + weight
-                
-                if tentative_g_score < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g_score
-                    f_score[neighbor] = g_score[neighbor] + heuristic[neighbor]
-                    if neighbor not in open_set_hash:
-                        counter += 1
-                        heapq.heappush(open_set, (f_score[neighbor], counter, neighbor))
-                        open_set_hash.add(neighbor)
+        heapq.heappush(open_heap, (h[start], counter, start))
+        open_hash = {start}
+        came_from: Dict = {}
+        g = {n: float("inf") for n in graph}
+        g[start] = 0
+        f = {n: float("inf") for n in graph}
+        f[start] = h[start]
+        explored: List[str] = []
 
-    def reconstruct_path(self, came_from: Dict, current: str) -> List[str]:
-        path = [current]
-        while current in came_from:
-            current = came_from[current]
-            path.append(current)
+        while open_heap:
+            _, _, cur = heapq.heappop(open_heap)
+            open_hash.discard(cur)
+            explored.append(cur)
+
+            self.steps.append({
+                "current": cur,
+                "explored": explored.copy(),
+                "open_set": list(open_hash),
+                "came_from": came_from.copy(),
+                "g": g.copy(),
+                "f": f.copy(),
+                "h": h,
+                "path": self._path(came_from, cur),
+            })
+
+            if cur == goal:
+                break
+
+            for nbr, w in graph[cur].items():
+                tg = g[cur] + w
+                if tg < g[nbr]:
+                    came_from[nbr] = cur
+                    g[nbr] = tg
+                    f[nbr] = tg + h[nbr]
+                    if nbr not in open_hash:
+                        counter += 1
+                        heapq.heappush(open_heap, (f[nbr], counter, nbr))
+                        open_hash.add(nbr)
+
+    def _path(self, came_from: Dict, cur: str) -> List[str]:
+        path = [cur]
+        while cur in came_from:
+            cur = came_from[cur]
+            path.append(cur)
         path.reverse()
         return path
 
-    def create_visualization(self, graph: Dict, positions: Dict, step_data: Dict, city_name: str, step_num: int, total_steps: int) -> plt.Figure:
-        plt.clf()
-        fig = plt.figure(figsize=(12, 8), facecolor='#F8F9FA')
-        ax = plt.gca()
-        ax.set_facecolor('#F8F9FA')
 
-        positions_x = [x for x, _ in positions.values()]
-        positions_y = [y for _, y in positions.values()]
-        margin = 0.8
-        plt.xlim(min(positions_x) - margin, max(positions_x) + margin)
-        plt.ylim(min(positions_y) - margin, max(positions_y) + margin)
+# ─────────────────────────────────────────────
+#  Rendering
+# ─────────────────────────────────────────────
 
-        G = nx.Graph()
-        for node in graph:
-            G.add_node(node)
-            for neighbor, weight in graph[node].items():
-                G.add_edge(node, neighbor, weight=weight)
+PALETTE = {
+    "bg":        "#0D1117",
+    "bg2":       "#161B22",
+    "border":    "#30363D",
+    "text":      "#E6EDF3",
+    "subtext":   "#8B949E",
+    "edge":      "#30363D",
+    "path_edge": "#58A6FF",
+    "node_def":  "#21262D",
+    "node_open": "#D29922",
+    "node_exp":  "#388BFD",
+    "node_path": "#3FB950",
+    "node_cur":  "#F85149",
+    "node_bdr":  "#484F58",
+}
 
-        edges_normal = []
-        edges_path = []
-        path = step_data['path']
+def render_frame(graph: Dict, positions: Dict, step: Dict, title: str, step_num: int, total: int) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(13, 8))
+    fig.patch.set_facecolor(PALETTE["bg"])
+    ax.set_facecolor(PALETTE["bg"])
 
-        for (u, v) in G.edges():
-            x1, y1 = positions[u]
-            x2, y2 = positions[v]
-            if path and u in path and v in path:
-                i1, i2 = path.index(u), path.index(v)
-                if abs(i1 - i2) == 1:
-                    edges_path.append(((x1, y1), (x2, y2)))
-                else:
-                    edges_normal.append(((x1, y1), (x2, y2)))
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    pad = 1.0
+    ax.set_xlim(min(xs) - pad, max(xs) + pad)
+    ax.set_ylim(min(ys) - pad, max(ys) + pad)
+
+    path = step["path"]
+    path_edges = set()
+    if path:
+        for i in range(len(path) - 1):
+            path_edges.add((path[i], path[i+1]))
+            path_edges.add((path[i+1], path[i]))
+
+    seen_edges = set()
+    normal_segs, path_segs = [], []
+    for node in graph:
+        for nbr in graph[node]:
+            key = tuple(sorted([node, nbr]))
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            x1, y1 = positions[node]
+            x2, y2 = positions[nbr]
+            seg = ((x1, y1), (x2, y2))
+            if (node, nbr) in path_edges:
+                path_segs.append(seg)
             else:
-                edges_normal.append(((x1, y1), (x2, y2)))
+                normal_segs.append(seg)
 
-        lc_normal = LineCollection(edges_normal, colors='#DEE2E6', linewidths=2, alpha=0.7)
-        ax.add_collection(lc_normal)
+    ax.add_collection(LineCollection(normal_segs, colors=PALETTE["edge"], linewidths=1.5, alpha=0.5, zorder=1))
+    if path_segs:
+        ax.add_collection(LineCollection(path_segs, colors=PALETTE["path_edge"], linewidths=3.0, alpha=0.9, zorder=2))
 
-        if edges_path:
-            lc_path = LineCollection(edges_path, colors='#FA5252', linewidths=3, alpha=0.8)
-            ax.add_collection(lc_path)
+    # Edge weight labels
+    for node in graph:
+        for nbr, w in graph[node].items():
+            if node < nbr:
+                mx = (positions[node][0] + positions[nbr][0]) / 2
+                my = (positions[node][1] + positions[nbr][1]) / 2
+                ax.text(mx, my, f"{w:.0f}", ha="center", va="center",
+                        fontsize=7, color=PALETTE["subtext"], zorder=3,
+                        bbox=dict(boxstyle="round,pad=0.15", fc=PALETTE["bg"], ec="none", alpha=0.8))
 
-        nx.draw_networkx_nodes(G, positions,
-                             node_color='#F8F9FA',
-                             node_size=250,
-                             edgecolors='#CED4DA',
-                             linewidths=2)
+    # Draw nodes
+    explored_set = set(step["explored"])
+    open_set = set(step["open_set"])
+    path_set = set(path)
 
-        if step_data['open_set']:
-            nx.draw_networkx_nodes(G, positions,
-                                 nodelist=step_data['open_set'],
-                                 node_color='#FFC107',
-                                 node_size=300,
-                                 edgecolors='#CED4DA',
-                                 linewidths=2)
+    for node, (nx_, ny) in positions.items():
+        if node == step["current"]:
+            color = PALETTE["node_cur"]
+            size = 420
+            border = "#FFFFFF"
+            bw = 2.5
+        elif node in path_set:
+            color = PALETTE["node_path"]
+            size = 380
+            border = "#FFFFFF"
+            bw = 2
+        elif node in explored_set:
+            color = PALETTE["node_exp"]
+            size = 340
+            border = PALETTE["node_bdr"]
+            bw = 1.5
+        elif node in open_set:
+            color = PALETTE["node_open"]
+            size = 340
+            border = PALETTE["node_bdr"]
+            bw = 1.5
+        else:
+            color = PALETTE["node_def"]
+            size = 300
+            border = PALETTE["node_bdr"]
+            bw = 1.5
 
-        if step_data['explored']:
-            nx.draw_networkx_nodes(G, positions,
-                                 nodelist=step_data['explored'],
-                                 node_color='#74C0FC',
-                                 node_size=300,
-                                 edgecolors='#CED4DA',
-                                 linewidths=2)
+        circle = plt.Circle((nx_, ny), 0.22, color=color, zorder=4, linewidth=bw,
+                             linestyle="-", fill=True, ec=border)
+        ax.add_patch(circle)
+        ax.text(nx_, ny, node, ha="center", va="center",
+                fontsize=8, fontweight="bold", color="#FFFFFF", zorder=5)
 
-        if path:
-            nx.draw_networkx_nodes(G, positions,
-                                 nodelist=path,
-                                 node_color='#40C057',
-                                 node_size=350,
-                                 edgecolors='#FFFFFF',
-                                 linewidths=2.5)
+        # Score label
+        g_val = step["g"][node]
+        h_val = step["h"][node]
+        f_val = step["f"][node]
+        g_str = f"{g_val:.1f}" if g_val != float("inf") else "∞"
+        f_str = f"{f_val:.1f}" if f_val != float("inf") else "∞"
+        score_txt = f"g={g_str}  h={h_val:.1f}\nf={f_str}"
+        ax.text(nx_, ny - 0.42, score_txt, ha="center", va="top",
+                fontsize=6.5, color=PALETTE["subtext"], zorder=5,
+                fontfamily="monospace")
 
-        labels = {}
-        for node in G.nodes():
-            g = step_data['g_score'][node]
-            f = step_data['f_score'][node]
-            h = step_data['heuristic'][node]
-            label = f"{node}\ng={g:.1f}\nh={h:.1f}\nf={f:.1f}"
-            labels[node] = label
+    # Title
+    ax.set_title(
+        f"{title}  ·  Step {step_num} / {total}",
+        color=PALETTE["text"], fontsize=14, fontweight="bold", pad=14,
+        fontfamily="monospace", loc="left"
+    )
 
-        label_pos = {k: (v[0], v[1]+0.2) for k, v in positions.items()}
-        nx.draw_networkx_labels(G, label_pos,
-                              labels=labels,
-                              font_size=8,
-                              font_color='#495057',
-                              font_weight='bold',
-                              font_family='sans-serif')
+    # Path info footer
+    if path:
+        cost = sum(graph[path[i]][path[i+1]] for i in range(len(path)-1))
+        footer = f"Path: {' → '.join(path)}   |   Cost: {cost:.1f}"
+    else:
+        footer = "Searching…"
+    ax.text(0.5, -0.03, footer, transform=ax.transAxes,
+            ha="center", va="top", fontsize=9, color=PALETTE["subtext"], fontfamily="monospace")
 
-        plt.title(f"A* Search - {city_name}\nStep {step_num}/{total_steps}",
-                 fontsize=16,
-                 pad=20,
-                 fontweight='bold',
-                 fontfamily='sans-serif',
-                 color='#212529')
+    # Legend
+    legend_items = [
+        mpatches.Patch(color=PALETTE["node_cur"],  label="Current"),
+        mpatches.Patch(color=PALETTE["node_path"], label="Path"),
+        mpatches.Patch(color=PALETTE["node_exp"],  label="Explored"),
+        mpatches.Patch(color=PALETTE["node_open"], label="Open"),
+        mpatches.Patch(color=PALETTE["node_def"],  label="Unvisited"),
+    ]
+    legend = ax.legend(handles=legend_items, loc="upper right",
+                       framealpha=0.15, labelcolor=PALETTE["text"],
+                       fontsize=8, facecolor=PALETTE["bg2"],
+                       edgecolor=PALETTE["border"])
+    for text in legend.get_texts():
+        text.set_color(PALETTE["text"])
 
-        if path:
-            cost = sum(graph[path[i]][path[i+1]] for i in range(len(path)-1))
-            info_text = f"Path: {' → '.join(path)}\nCost: {cost:.1f}"
-            plt.figtext(0.5, 0.02, info_text,
-                       ha="center",
-                       fontsize=10,
-                       fontfamily='sans-serif',
-                       color='#495057')
+    ax.set_axis_off()
+    plt.tight_layout(pad=1.2)
+    return fig
 
-        ax.set_axis_off()
-        plt.tight_layout()
-        return fig
-    
-    def create_animation(self, graph: Dict, positions: Dict, city_name: str, fps: int = 1) -> str:
-        if not self.steps:
-            return None
-            
-        fig = plt.figure(figsize=(12, 8), facecolor='#F8F9FA')
-        frames = []
-        
-        for i, step_data in enumerate(self.steps):
-            plt.clf()
-            fig = self.create_visualization(
-                graph, 
-                positions, 
-                step_data, 
-                city_name,
-                i + 1,
-                len(self.steps)
-            )
-            
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100)
-            buf.seek(0)
-            img = Image.open(buf)
-            frames.append(img)
-            plt.close(fig)
-        
-        if not os.path.exists('temp'):
-            os.makedirs('temp')
-        output_path = f'temp/{city_name}_astar.gif'
-        duration = int(1000 / fps)
-        
-        frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=frames[1:],
-            optimize=True,
-            duration=duration,
-            loop=0
-        )
-        
-        return output_path
+
+def build_gif(graph, positions, steps, city_name, fps) -> str:
+    os.makedirs("temp", exist_ok=True)
+    frames = []
+    total = len(steps)
+    for i, step in enumerate(steps):
+        fig = render_frame(graph, positions, step, city_name, i + 1, total)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110, facecolor=PALETTE["bg"])
+        buf.seek(0)
+        frames.append(Image.open(buf).copy())
+        plt.close(fig)
+
+    out = f"temp/{city_name}_astar.gif"
+    duration = max(100, int(1000 / fps))
+    frames[0].save(out, save_all=True, append_images=frames[1:],
+                   optimize=True, duration=duration, loop=0)
+    return out
+
+
+# ─────────────────────────────────────────────
+#  Streamlit UI
+# ─────────────────────────────────────────────
 
 def main():
-    st.set_page_config(page_title="A* Search", layout="wide")
-    
-    st.markdown("""
-        <style>
-        .stApp {
-            background-color: #F8F9FA;
-        }
-        .centered-buttons {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-    
-    st.title("A* Search")
-    
-    if 'visualizer' not in st.session_state:
-        st.session_state.visualizer = AStarVisualizer()
-    if 'current_step' not in st.session_state:
-        st.session_state.current_step = 0
-    if 'last_map' not in st.session_state:
-        st.session_state.last_map = None
-    if 'animation_path' not in st.session_state:
-        st.session_state.animation_path = None
-    
+    st.set_page_config(page_title="A* Pathfinder", layout="wide", page_icon="🔍")
+
+    st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600&display=swap');
+
+    html, body, [class*="css"] {{
+        background-color: {PALETTE["bg"]} !important;
+        color: {PALETTE["text"]} !important;
+        font-family: 'Space Grotesk', sans-serif;
+    }}
+    .stApp {{ background-color: {PALETTE["bg"]}; }}
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {{
+        background-color: {PALETTE["bg2"]} !important;
+        border-right: 1px solid {PALETTE["border"]};
+    }}
+    [data-testid="stSidebar"] * {{ color: {PALETTE["text"]} !important; }}
+
+    /* Selectbox / inputs */
+    [data-testid="stSelectbox"] > div > div,
+    [data-testid="stNumberInput"] > div > div {{
+        background-color: {PALETTE["bg"]} !important;
+        border: 1px solid {PALETTE["border"]} !important;
+        border-radius: 6px;
+        color: {PALETTE["text"]} !important;
+        font-family: 'JetBrains Mono', monospace;
+    }}
+
+    /* Buttons */
+    .stButton > button {{
+        background: {PALETTE["node_path"]} !important;
+        color: {PALETTE["bg"]} !important;
+        border: none;
+        border-radius: 6px;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+        font-size: 14px;
+        padding: 0.5rem 1.5rem;
+        width: 100%;
+        transition: opacity 0.2s;
+    }}
+    .stButton > button:hover {{ opacity: 0.85; }}
+
+    /* Metric cards */
+    [data-testid="stMetric"] {{
+        background-color: {PALETTE["bg2"]};
+        border: 1px solid {PALETTE["border"]};
+        border-radius: 8px;
+        padding: 0.8rem 1.2rem;
+    }}
+    [data-testid="stMetricLabel"] {{ color: {PALETTE["subtext"]} !important; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }}
+    [data-testid="stMetricValue"] {{ color: {PALETTE["text"]} !important; font-family: 'JetBrains Mono', monospace; font-size: 22px; }}
+
+    /* Table */
+    [data-testid="stTable"] table {{
+        background-color: {PALETTE["bg2"]};
+        border: 1px solid {PALETTE["border"]};
+        border-radius: 8px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 12px;
+    }}
+    [data-testid="stTable"] th {{
+        background-color: {PALETTE["bg"]} !important;
+        color: {PALETTE["subtext"]} !important;
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid {PALETTE["border"]};
+    }}
+    [data-testid="stTable"] td {{ color: {PALETTE["text"]} !important; border-bottom: 1px solid {PALETTE["border"]}; }}
+
+    /* Slider */
+    [data-testid="stSlider"] * {{ color: {PALETTE["text"]} !important; }}
+
+    /* Info box */
+    .stAlert {{ background-color: {PALETTE["bg2"]} !important; border: 1px solid {PALETTE["border"]} !important; color: {PALETTE["subtext"]} !important; }}
+
+    /* Divider */
+    hr {{ border-color: {PALETTE["border"]} !important; }}
+
+    /* Remove default top padding */
+    .block-container {{ padding-top: 2rem; }}
+
+    /* Page title */
+    .page-title {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 26px;
+        font-weight: 700;
+        color: {PALETTE["text"]};
+        letter-spacing: -0.02em;
+    }}
+    .page-subtitle {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 12px;
+        color: {PALETTE["subtext"]};
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin-bottom: 1.5rem;
+    }}
+    .badge {{
+        display: inline-block;
+        background: {PALETTE["node_path"]}22;
+        color: {PALETTE["node_path"]};
+        border: 1px solid {PALETTE["node_path"]}55;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        margin-right: 6px;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Header ──────────────────────────────
+    st.markdown('<p class="page-title">A* Pathfinding Visualiser</p>', unsafe_allow_html=True)
+    st.markdown('<p class="page-subtitle">Interactive step-by-step graph search</p>', unsafe_allow_html=True)
+
+    # ── Session state ────────────────────────
+    for key, default in [("viz", None), ("current_step", 0),
+                         ("last_map", None), ("gif_path", None)]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    # ── Sidebar ──────────────────────────────
     with st.sidebar:
-        st.header("Settings")
-        
-        available_maps = [f[:-3] for f in os.listdir('maps') if f.endswith('.pt')]
-        if not available_maps:
-            st.warning("No maps found")
+        st.markdown("### ⚙️ Configuration")
+        st.markdown("---")
+
+        maps_dir = "maps"
+        if not os.path.exists(maps_dir):
+            st.error("No `maps/` directory found.")
             return
-        
-        selected_map = st.selectbox("Map", available_maps)
-        
+        available = sorted([f[:-3] for f in os.listdir(maps_dir) if f.endswith(".pt")])
+        if not available:
+            st.warning("No `.pt` map files found in `maps/`.")
+            return
+
+        selected_map = st.selectbox("🗺️  Map", available)
+
         if selected_map != st.session_state.last_map:
-            st.session_state.visualizer = AStarVisualizer()
-            st.session_state.current_step = 0
+            st.session_state.viz = AStarVisualizer()
             st.session_state.last_map = selected_map
-            st.session_state.animation_path = None
-        
-        map_data = torch.load(f'maps/{selected_map}.pt')
-        
-        nodes = sorted(map_data['graph'].keys())
-        types = ['euclidean', 'manhattan','djisktra']
+            st.session_state.gif_path = None
+
+        map_data = torch.load(f"{maps_dir}/{selected_map}.pt", weights_only=False)
+        nodes = sorted(map_data["graph"].keys())
+
+        st.markdown("#### Nodes")
         col1, col2 = st.columns(2)
         with col1:
             start_node = st.selectbox("Start", nodes, index=0)
         with col2:
-            end_node = st.selectbox("Goal", nodes, index=len(nodes)-1)
-        
-        type = st.selectbox("Type of Heuristic", types, index = 0)
-        fps = st.slider("Speed", 1, 10, 2, 1)
-        
-        if st.button("Run Search"):
-            st.session_state.visualizer.run_astar(
-                map_data['graph'],
-                map_data['positions'],
-                start_node,
-                end_node, 
-                type
+            end_node = st.selectbox("Goal", nodes, index=len(nodes) - 1)
+
+        st.markdown("#### Heuristic")
+        heuristic_type = st.selectbox(
+            "Function",
+            ["euclidean", "manhattan", "dijkstra"],
+            format_func=lambda x: {"euclidean": "Euclidean (L2)", "manhattan": "Manhattan (L1)", "dijkstra": "Dijkstra (h=0)"}[x]
+        )
+
+        st.markdown("#### Playback")
+        fps = st.slider("Frames per second", 1, 10, 2)
+
+        st.markdown("---")
+        run_btn = st.button("▶  Run A* Search")
+
+        if run_btn:
+            if start_node == end_node:
+                st.error("Start and goal must differ.")
+            else:
+                viz = AStarVisualizer()
+                viz.run(map_data["graph"], map_data["positions"], start_node, end_node, heuristic_type)
+                st.session_state.viz = viz
+
+                with st.spinner("Rendering animation…"):
+                    gif = build_gif(map_data["graph"], map_data["positions"],
+                                    viz.steps, selected_map, fps)
+                st.session_state.gif_path = gif
+
+    # ── Main content ─────────────────────────
+    viz: AStarVisualizer = st.session_state.viz
+
+    if st.session_state.gif_path and viz and viz.steps:
+        st.image(st.session_state.gif_path, use_container_width=True)
+
+        st.markdown("---")
+        final = viz.steps[-1]
+        found = final["path"] and final["path"][-1] == final["path"][-1]
+
+        # Metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Nodes Explored", len(final["explored"]))
+        with col2:
+            st.metric("Search Steps", len(viz.steps))
+        with col3:
+            if final["path"]:
+                cost = sum(map_data["graph"][final["path"][i]][final["path"][i+1]]
+                           for i in range(len(final["path"]) - 1))
+                st.metric("Path Cost", f"{cost:.1f}")
+            else:
+                st.metric("Path Cost", "N/A")
+        with col4:
+            st.metric("Path Length", len(final["path"]) if final["path"] else 0)
+
+        # Path display
+        if final["path"]:
+            st.markdown("**Optimal path found:**")
+            badges = "".join(f'<span class="badge">{n}</span>' for n in final["path"])
+            st.markdown(badges, unsafe_allow_html=True)
+
+        # Node scores table
+        st.markdown("#### Node Score Summary")
+        rows = []
+        for node in sorted(map_data["graph"].keys()):
+            g_v = final["g"][node]
+            f_v = final["f"][node]
+            status = (
+                "🟢 Path" if node in final["path"] else
+                "🔵 Explored" if node in final["explored"] else
+                "🟡 Open" if node in final["open_set"] else
+                "⚪ Unvisited"
             )
-            
-            with st.spinner("Generating..."):
-                animation_path = st.session_state.visualizer.create_animation(
-                    map_data['graph'],
-                    map_data['positions'],
-                    selected_map,
-                    fps=fps
-                )
-                st.session_state.animation_path = animation_path
-    
-    if st.session_state.animation_path:
-        st.image(st.session_state.animation_path, use_container_width=True)
-        
-        if st.session_state.visualizer.steps:
-            final_step = st.session_state.visualizer.steps[-1]
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Nodes Explored", len(final_step['explored']))
-            with col2:
-                if final_step['path']:
-                    path_cost = sum(map_data['graph'][final_step['path'][i]][final_step['path'][i+1]] 
-                                   for i in range(len(final_step['path'])-1))
-                    st.metric("Path Cost", f"{path_cost:.1f}")
-            with col3:
-                st.metric("Steps", len(st.session_state.visualizer.steps))
-            
-            if final_step['path']:
-                st.write("Path found: " + " → ".join(final_step['path']))
-                st.subheader("Node Scores")
-                scores_data = []
-                for node in map_data['graph'].keys():
-                    scores_data.append({
-                        "Node": node,
-                        "g": f"{final_step['g_score'][node]:.1f}" if final_step['g_score'][node] != float('inf') else "∞",
-                        "h": f"{final_step['heuristic'][node]:.1f}",
-                        "f": f"{final_step['f_score'][node]:.1f}" if final_step['f_score'][node] != float('inf') else "∞",
-                        "Status": ("Path" if node in final_step['path'] else 
-                                  "Explored" if node in final_step['explored'] else 
-                                  "Open" if node in final_step['open_set'] else 
-                                  "Unexplored")
-                    })
-                st.table(scores_data)
+            rows.append({
+                "Node": node,
+                "g  (cost from start)": f"{g_v:.2f}" if g_v != float("inf") else "∞",
+                "h  (heuristic)": f"{final['h'][node]:.2f}",
+                "f  (total)": f"{f_v:.2f}" if f_v != float("inf") else "∞",
+                "Status": status,
+            })
+        st.table(rows)
+
     else:
-        st.info("Select start and goal nodes, then click 'Run Search'")
-        st.markdown("""
-        ### Legend
-        - 🟢 Path
-        - 🔵 Explored
-        - 🟡 Open
-        - ⚪ Unexplored
-        
-        ### Score Labels
-        - g = Path cost from start
-        - h = Distance to goal
-        - f = Total cost
-        """)
+        # Empty state
+        st.markdown(f"""
+        <div style="text-align:center; padding: 4rem 2rem; color: {PALETTE['subtext']};">
+            <div style="font-size:48px; margin-bottom:1rem;">🔍</div>
+            <p style="font-family:'JetBrains Mono',monospace; font-size:14px;">
+                Select a map, choose start & goal nodes, then click <strong style="color:{PALETTE['node_path']}">Run A* Search</strong>.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.expander("📖 How to read the visualisation"):
+            st.markdown(f"""
+| Symbol | Meaning |
+|--------|---------|
+| 🔴 Red node | Node currently being expanded |
+| 🟢 Green node | Node on the optimal path |
+| 🔵 Blue node | Already explored |
+| 🟡 Yellow node | In the open (frontier) set |
+| ⚪ Grey node | Not yet visited |
+| **g** | Exact cost from start to this node |
+| **h** | Heuristic estimate to goal |
+| **f = g + h** | Total estimated cost |
+            """)
+
 
 if __name__ == "__main__":
     main()
